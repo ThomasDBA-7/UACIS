@@ -24,3 +24,32 @@ CREATE TABLE IF NOT EXISTS usuarios (
   bio TEXT,
   foto LONGTEXT
 );
+
+-- ── ÉPICA 02: Gestión de Espacios ──────────────────────────────
+CREATE TABLE IF NOT EXISTS espacios (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(255) NOT NULL,
+  tipo ENUM('salon','auditorio','laboratorio','cancha','zona_estudio') NOT NULL,
+  capacidad INT NOT NULL,
+  ubicacion VARCHAR(255) NOT NULL,
+  descripcion TEXT,
+  imagen LONGTEXT,
+  estado ENUM('activo','inactivo') DEFAULT 'activo',
+  creado_por VARCHAR(255),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tabla base de reservas (necesaria para mostrar disponibilidad en US-006)
+CREATE TABLE IF NOT EXISTS reservas (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  espacio_id INT NOT NULL,
+  usuario_correo VARCHAR(255) NOT NULL,
+  fecha DATE NOT NULL,
+  hora_inicio TIME NOT NULL,
+  hora_fin TIME NOT NULL,
+  proposito TEXT,
+  estado ENUM('pendiente','aprobada','rechazada','cancelada') DEFAULT 'pendiente',
+  motivo_rechazo TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (espacio_id) REFERENCES espacios(id) ON DELETE CASCADE
+);
