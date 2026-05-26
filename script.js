@@ -1,15 +1,10 @@
-
 /* ══════════════════════════════
    ESTADO GLOBAL
 ══════════════════════════════ */
-// Base de datos de usuarios registrados: { correo: { password, nombre, ... } }
-let usuariosDB = {};
-
-// Usuario actualmente autenticado
-let usuarioActual = null;
-
-// Paso actual en edición de perfil
-let stepActual = 1;
+let usuarioActual = null;   // correo del usuario logueado
+let usuarioDatos  = null;   // objeto con todos los datos del perfil
+let stepActual    = 1;
+let imagenEspacioBase64 = null;  // imagen temporal al crear espacio
 
 /* ══════════════════════════════
    LOGIN
@@ -27,7 +22,7 @@ document.getElementById('togglePassword').addEventListener('click', function () 
   });
 });
 
-function doLogin() {
+async function doLogin() {
   const correoInput = document.getElementById('usernameInput').value.trim().toLowerCase();
   const passInput   = document.getElementById('passwordInput').value;
   const err         = document.getElementById('loginError');
@@ -39,22 +34,31 @@ function doLogin() {
     return;
   }
 
-  const usuario = usuariosDB[correoInput];
-  if (!usuario) {
-    errMsg.textContent = 'No existe una cuenta con ese correo.';
-    err.classList.remove('hidden');
-    return;
-  }
+  try {
+    const response = await fetch('./login.php', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correo: correoInput, password: passInput })
+    });
 
-  if (usuario.password !== passInput) {
-    errMsg.textContent = 'Contraseña incorrecta.';
-    err.classList.remove('hidden');
-    return;
-  }
+    const result = await response.json();
 
-  err.classList.add('hidden');
-  usuarioActual = correoInput;
-  iniciarDashboard();
+    if (!response.ok) {
+      errMsg.textContent = result.error || 'Error al iniciar sesión';
+      err.classList.remove('hidden');
+      return;
+    }
+
+    err.classList.add('hidden');
+    usuarioActual = correoInput;
+    usuarioDatos  = result.usuario;
+    iniciarDashboard();
+  } catch (error) {
+    console.error('Error:', error);
+    errMsg.textContent = 'Error de conexión con el servidor';
+    err.classList.remove('hidden');
+  }
 }
 
 function iniciarDashboard() {
@@ -64,29 +68,28 @@ function iniciarDashboard() {
   dash.classList.add('flex');
 
   actualizarUI();
+  configurarVistaPorRol();
   mostrarSeccion('inicio');
+  cargarEspacios();
+  cargarMisReservas();
+  cargarRecordatoriosReservas();
   lucide.createIcons();
 }
 
-// Refresca toda la UI con los datos del usuario actual
 function actualizarUI() {
-  const u = usuariosDB[usuarioActual];
+  const u = usuarioDatos;
   if (!u) return;
 
   const nombreMostrar = construirNombreCompleto(u) || u.nombre || extraerNombre(usuarioActual);
   const inicial = nombreMostrar.charAt(0).toUpperCase();
   const correo  = usuarioActual;
 
-  // Sidebar / avatar
   document.getElementById('miniNombre').textContent    = nombreMostrar;
   document.getElementById('avatarMini').textContent    = inicial;
   document.getElementById('avatarGrande').textContent  = inicial;
   document.getElementById('previewAvatar').textContent = inicial;
+  document.getElementById('welcomeMsg').textContent    = `¡Bienvenido, ${nombreMostrar.split(' ')[0]}!`;
 
-  // Welcome
-  document.getElementById('welcomeMsg').textContent = `¡Bienvenido, ${nombreMostrar.split(' ')[0]}!`;
-
-  // Vista perfil
   document.getElementById('nombreCompleto').textContent = nombreMostrar;
   document.getElementById('perfilCorreo').textContent   = correo;
   document.getElementById('vistaDni').textContent       = u.dni || '–';
@@ -95,16 +98,24 @@ function actualizarUI() {
   document.getElementById('vistaSexo').textContent      = u.sexo || '–';
   document.getElementById('vistaCiudad').textContent    = u.ciudad || '–';
 
-  // Si hay foto
   if (u.foto) {
     ['avatarMini','avatarGrande','previewAvatar'].forEach(id => {
       const el = document.getElementById(id);
-      el.style.backgroundImage = `url(${u.foto})`;
-      el.style.backgroundSize  = 'cover';
+      el.style.backgroundImage    = `url(${u.foto})`;
+      el.style.backgroundSize     = 'cover';
       el.style.backgroundPosition = 'center';
       el.textContent = '';
     });
   }
+}
+
+/* Muestra/oculta elementos según el rol del usuario */
+function configurarVistaPorRol() {
+  const esAdmin = usuarioDatos && usuarioDatos.rol === 'Administrativo';
+  document.getElementById('nav-espacio-crear').classList.toggle('hidden', !esAdmin);
+  document.getElementById('nav-admin-reservas').classList.toggle('hidden', !esAdmin);
+  const btnHeader = document.getElementById('btnCrearEspacioHeader');
+  if (btnHeader) btnHeader.classList.toggle('hidden', !esAdmin);
 }
 
 function construirNombreCompleto(u) {
@@ -118,7 +129,9 @@ function extraerNombre(correo) {
 }
 
 function doLogout() {
-  usuarioActual = null;
+  usuarioActual       = null;
+  usuarioDatos        = null;
+  imagenEspacioBase64 = null;
   document.getElementById('app-dashboard').classList.add('hidden');
   document.getElementById('app-dashboard').classList.remove('flex');
   document.getElementById('app-login').classList.remove('hidden');
@@ -178,7 +191,7 @@ function ocultarErrorReg(inputId, errId) {
   document.getElementById(errId).classList.remove('show');
 }
 
-function doRegistro() {
+async function doRegistro() {
   let valido = true;
 
   const nombre = document.getElementById('regNombre').value.trim();
@@ -186,13 +199,9 @@ function doRegistro() {
   else ocultarErrorReg('regNombre','errNombre');
 
   const correo = document.getElementById('regCorreo').value.trim().toLowerCase();
-  const errCorreoEl = document.getElementById('errCorreo');
   const dominioOk = correo.endsWith('@pascualbravo.edu.co') && correo.length > '@pascualbravo.edu.co'.length;
   if (!dominioOk) {
-    errCorreoEl.textContent = 'El correo debe ser @pascualbravo.edu.co';
-    mostrarErrorReg('regCorreo','errCorreo'); valido = false;
-  } else if (usuariosDB[correo]) {
-    errCorreoEl.textContent = 'Este correo ya se encuentra registrado.';
+    document.getElementById('errCorreo').textContent = 'El correo debe ser @pascualbravo.edu.co';
     mostrarErrorReg('regCorreo','errCorreo'); valido = false;
   } else {
     ocultarErrorReg('regCorreo','errCorreo');
@@ -208,26 +217,38 @@ function doRegistro() {
 
   if (!valido) return;
 
-  // Guardar usuario en la BD local
-  usuariosDB[correo] = {
-    password: pass,
-    nombre: nombre,
-    // Los demás campos se llenan en edición
-    primerNombre: nombre.split(' ')[0] || '',
-    primerApellido: nombre.split(' ').slice(1).join(' ') || '',
-    correo: correo
-  };
+  try {
+    const response = await fetch('./actualizar_perfil.php', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos)
+    });
 
-  document.getElementById('regForm').style.display = 'none';
-  document.getElementById('regExito').classList.remove('hidden');
+    const result = await response.json();
 
-  // Pre-rellenar login
-  document.getElementById('usernameInput').value = correo;
+    if (!response.ok) {
+      if (result.error && result.error.includes('correo')) {
+        mostrarErrorReg('regCorreo','errCorreo');
+        document.getElementById('errCorreo').textContent = result.error;
+      } else {
+        alert(result.error || 'Error en el registro');
+      }
+      return;
+    }
 
-  setTimeout(() => {
-    cerrarRegistro();
-    mostrarToast('✓ Cuenta creada. ¡Ya puedes iniciar sesión!');
-  }, 2000);
+    document.getElementById('regForm').style.display = 'none';
+    document.getElementById('regExito').classList.remove('hidden');
+    document.getElementById('usernameInput').value = correo;
+
+    setTimeout(() => {
+      cerrarRegistro();
+      mostrarToast('✓ Cuenta creada. ¡Ya puedes iniciar sesión!');
+    }, 2000);
+  } catch (error) {
+    console.error('Error:', error);
+    alert('Error de conexión con el servidor');
+  }
 }
 
 /* ══════════════════════════════
@@ -252,14 +273,18 @@ function mostrarSeccion(id) {
     navBtn.classList.remove('text-gray-600');
   }
   lucide.createIcons();
+
+  // Cargas reactivas por sección
+  if (id === 'reservas')       cargarMisReservas();
+  if (id === 'nueva-reserva')  inicializarFormularioReserva();
+  if (id === 'admin-reservas') cargarReservasAdmin(filtroAdminActual);
 }
 
 /* ══════════════════════════════
-   EDICIÓN POR PASOS
+   EDICIÓN DE PERFIL POR PASOS
 ══════════════════════════════ */
 function abrirEdicion() {
-  // Cargar datos actuales en los campos
-  const u = usuariosDB[usuarioActual] || {};
+  const u = usuarioDatos || {};
 
   setValue('editTipoDoc',        u.tipoDoc || 'CC');
   setValue('editDni',            u.dni || '');
@@ -276,6 +301,7 @@ function abrirEdicion() {
       el.title = dniYaRegistrado ? 'El número de documento no puede modificarse una vez guardado.' : '';
     }
   });
+
   setValue('editPrimerNombre',   u.primerNombre || '');
   setValue('editSegundoNombre',  u.segundoNombre || '');
   setValue('editPrimerApellido', u.primerApellido || '');
@@ -289,9 +315,23 @@ function abrirEdicion() {
   setValue('editDireccion',      u.direccion || '');
   setValue('editRol',            u.rol || '');
   setValue('editPrograma',       u.programa || '');
+
+  // El rol no se puede editar desde la UI — solo se asigna desde la BD
+  const rolSelect = document.getElementById('editRol');
+  rolSelect.disabled = true;
+  rolSelect.style.opacity = '0.6';
+  rolSelect.style.cursor  = 'not-allowed';
+  rolSelect.title = 'El rol es asignado por la institución y no puede modificarse.';
+
+  // Mostrar "Programa académico" solo para Estudiantes
+  const esEstudiante = (u.rol || '') === 'Estudiante';
+  document.getElementById('campoPrograma').classList.toggle('hidden', !esEstudiante);
+  // Si no es estudiante, limpiar el campo rol para que ocupe el ancho completo
+  document.getElementById('campoRol').className = esEstudiante
+    ? ''
+    : 'sm:col-span-2';
   setValue('editBio',            u.bio || '');
 
-  // Preview avatar
   const nombreM = construirNombreCompleto(u) || u.nombre || '';
   document.getElementById('previewAvatar').textContent = nombreM.charAt(0).toUpperCase() || '?';
   if (u.foto) {
@@ -312,8 +352,6 @@ function setValue(id, val) {
 
 function irStep(num) {
   stepActual = num;
-
-  // Ocultar todos los tabs
   [1,2,3].forEach(n => {
     document.getElementById(`edit-tab-${n}`).classList.remove('active');
     const pill = document.getElementById(`step-pill-${n}`);
@@ -331,7 +369,6 @@ function irStep(num) {
       pill.querySelector('.step-dot').textContent = n;
     }
   });
-
   document.getElementById(`edit-tab-${num}`).classList.add('active');
   lucide.createIcons();
 }
@@ -342,54 +379,747 @@ function previewFoto(event) {
   const reader = new FileReader();
   reader.onload = e => {
     const av = document.getElementById('previewAvatar');
-    av.style.backgroundImage = `url(${e.target.result})`;
-    av.style.backgroundSize  = 'cover';
+    av.style.backgroundImage    = `url(${e.target.result})`;
+    av.style.backgroundSize     = 'cover';
     av.style.backgroundPosition = 'center';
     av.textContent = '';
-    // Guardar temporalmente
-    if (usuarioActual && usuariosDB[usuarioActual]) {
-      usuariosDB[usuarioActual].foto = e.target.result;
-    }
+    if (usuarioDatos) usuarioDatos.foto = e.target.result;
   };
   reader.readAsDataURL(file);
 }
 
-function guardarPerfil() {
+async function guardarPerfil() {
   if (!usuarioActual) return;
 
-  const u = usuariosDB[usuarioActual];
+  const datos = {};
+  datos.correo = usuarioActual;
 
-  // Recoger todos los campos
-  // Solo guardar el documento si no estaba registrado previamente (se edita una sola vez)
-  if (!u.dni || !u.dni.trim()) {
-    u.tipoDoc  = document.getElementById('editTipoDoc').value;
-    u.dni      = document.getElementById('editDni').value.trim();
-    u.fechaExp = document.getElementById('editFechaExp').value;
+  // Solo guardamos documento si no estaba registrado previamente
+  if (!usuarioDatos.dni || !usuarioDatos.dni.trim()) {
+    datos.tipoDoc  = document.getElementById('editTipoDoc').value;
+    datos.dni      = document.getElementById('editDni').value.trim();
+    datos.fechaExp = document.getElementById('editFechaExp').value;
   }
-  u.primerNombre    = document.getElementById('editPrimerNombre').value.trim();
-  u.segundoNombre   = document.getElementById('editSegundoNombre').value.trim();
-  u.primerApellido  = document.getElementById('editPrimerApellido').value.trim();
-  u.segundoApellido = document.getElementById('editSegundoApellido').value.trim();
-  u.sexo            = document.getElementById('editSexo').value;
-  u.fechaNac        = document.getElementById('editFechaNac').value;
-  u.telefono        = document.getElementById('editTelefono').value.trim();
-  u.telefonoAlt     = document.getElementById('editTelefonoAlt').value.trim();
-  u.ciudad          = document.getElementById('editCiudad').value.trim();
-  u.direccion       = document.getElementById('editDireccion').value.trim();
-  u.rol             = document.getElementById('editRol').value;
-  u.programa        = document.getElementById('editPrograma').value.trim();
-  u.bio             = document.getElementById('editBio').value.trim();
+  datos.primerNombre    = document.getElementById('editPrimerNombre').value.trim();
+  datos.segundoNombre   = document.getElementById('editSegundoNombre').value.trim();
+  datos.primerApellido  = document.getElementById('editPrimerApellido').value.trim();
+  datos.segundoApellido = document.getElementById('editSegundoApellido').value.trim();
+  datos.sexo            = document.getElementById('editSexo').value;
+  datos.fechaNac        = document.getElementById('editFechaNac').value;
+  datos.telefono        = document.getElementById('editTelefono').value.trim();
+  datos.telefonoAlt     = document.getElementById('editTelefonoAlt').value.trim();
+  datos.ciudad          = document.getElementById('editCiudad').value.trim();
+  datos.direccion       = document.getElementById('editDireccion').value.trim();
+  // El rol NO se envía — está protegido en el backend y no es editable desde la UI
+  datos.programa        = document.getElementById('editPrograma').value.trim();
+  datos.bio             = document.getElementById('editBio').value.trim();
+  datos.foto            = usuarioDatos.foto || null;
+  datos.nombre          = construirNombreCompleto(datos) || usuarioDatos.nombre;
 
-  // El correo puede cambiar (si el campo editCorreo lo permite)
-  // En este caso lo dejamos igual para no perder la clave del mapa
-  // (si se quisiera cambiar, habría que migrar la clave)
+  try {
+    const response = await fetch('./actualizar_perfil.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos)
+    });
 
-  // Nombre compuesto para mostrar
-  u.nombre = construirNombreCompleto(u) || u.nombre;
+    const result = await response.json();
 
-  actualizarUI();
-  mostrarSeccion('perfil-vista');
-  mostrarToast('✓ Perfil actualizado correctamente');
+    if (!response.ok) {
+      alert(result.error || 'Error al guardar los cambios');
+      return;
+    }
+
+    for (let key in datos) {
+      if (datos.hasOwnProperty(key)) usuarioDatos[key] = datos[key];
+    }
+
+    actualizarUI();
+    configurarVistaPorRol();   // re-evalúa el rol por si cambió
+    mostrarSeccion('perfil-vista');
+    mostrarToast('✓ Perfil actualizado correctamente');
+  } catch (error) {
+    console.error('Error:', error);
+    alert('Error de conexión al guardar');
+  }
+}
+
+/* ══════════════════════════════
+   RESTRICCIÓN DOCUMENTO SOLO NÚMEROS
+══════════════════════════════ */
+document.addEventListener('DOMContentLoaded', function() {
+  const dniInput = document.getElementById('editDni');
+  if (dniInput) {
+    dniInput.addEventListener('input', function() {
+      this.value = this.value.replace(/\D/g, '');
+    });
+  }
+});
+
+/* ══════════════════════════════════════════════
+   ÉPICA 02 — GESTIÓN DE ESPACIOS
+══════════════════════════════════════════════ */
+
+const TIPO_LABELS = {
+  salon:        'Salón',
+  auditorio:    'Auditorio',
+  laboratorio:  'Laboratorio',
+  cancha:       'Cancha',
+  zona_estudio: 'Zona de estudio'
+};
+
+const TIPO_COLORS = {
+  salon:        'badge-salon',
+  auditorio:    'badge-auditorio',
+  laboratorio:  'badge-laboratorio',
+  cancha:       'badge-cancha',
+  zona_estudio: 'badge-zona'
+};
+
+function imagenPorDefectoEspacio(tipo, grande = false) {
+  const config = {
+    salon: {
+      icono: 'school',
+      titulo: 'Salón',
+      fondo: 'from-blue-100 to-blue-300',
+      texto: 'text-blue-700'
+    },
+    auditorio: {
+      icono: 'mic-2',
+      titulo: 'Auditorio',
+      fondo: 'from-purple-100 to-purple-300',
+      texto: 'text-purple-700'
+    },
+    laboratorio: {
+      icono: 'flask-conical',
+      titulo: 'Laboratorio',
+      fondo: 'from-emerald-100 to-emerald-300',
+      texto: 'text-emerald-700'
+    },
+    cancha: {
+      icono: 'dumbbell',
+      titulo: 'Cancha',
+      fondo: 'from-orange-100 to-orange-300',
+      texto: 'text-orange-700'
+    },
+    zona_estudio: {
+      icono: 'book-open',
+      titulo: 'Zona de estudio',
+      fondo: 'from-cyan-100 to-cyan-300',
+      texto: 'text-cyan-700'
+    }
+  };
+
+  function imagenPorDefectoEspacio(tipo) {
+    const imagenes = {
+      salon: './img/salon.jpg',
+      auditorio: './img/auditorio.jpg',
+      laboratorio: './img/laboratorio.jpg',
+      cancha: './img/cancha.jpg',
+      zona_estudio: './img/zona-estudio.jpg'
+    };
+  
+    return imagenes[tipo] || './img/espacio-default.jpg';
+  }
+
+  const item = config[tipo] || {
+    icono: 'building-2',
+    titulo: 'Espacio',
+    fondo: 'from-gray-100 to-gray-300',
+    texto: 'text-gray-700'
+  };
+
+  const iconSize = grande ? 'w-20 h-20 mb-3' : 'w-12 h-12 mb-2';
+  const textSize = grande ? 'text-lg' : 'text-sm';
+
+  return `
+    <div class="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br ${item.fondo} ${item.texto}">
+      <i data-lucide="${item.icono}" class="${iconSize}"></i>
+      <span class="${textSize} font-bold">${item.titulo}</span>
+    </div>
+  `;
+}
+
+/* ─── US-005: Catálogo de Espacios ─── */
+async function cargarEspacios() {
+  const tipo        = document.getElementById('filtroTipo')?.value || '';
+  const capacidad   = document.getElementById('filtroCapacidad')?.value || '';
+  const ordenar     = document.getElementById('filtroOrden')?.value || 'nombre';
+
+  const grid     = document.getElementById('espaciosGrid');
+  const cargando = document.getElementById('espaciosCargando');
+  const vacio    = document.getElementById('espaciosVacio');
+
+  if (!grid) return;
+
+  grid.innerHTML = '';
+  cargando.classList.remove('hidden');
+  vacio.classList.add('hidden');
+
+  const params = new URLSearchParams();
+  if (tipo)      params.append('tipo', tipo);
+  if (capacidad) params.append('capacidad_min', capacidad);
+  params.append('ordenar', ordenar);
+
+  try {
+    const res  = await fetch(`./listar_espacios.php?${params.toString()}`);
+    const data = await res.json();
+    cargando.classList.add('hidden');
+
+    const espacios = data.espacios || [];
+
+    // Actualizar contador en inicio
+    const totalEl = document.getElementById('totalEspaciosHome');
+    if (totalEl) totalEl.textContent = espacios.length;
+
+    if (espacios.length === 0) {
+      vacio.classList.remove('hidden');
+      return;
+    }
+
+    espacios.forEach(e => {
+      const card = document.createElement('div');
+      card.className = 'espacio-card';
+      card.innerHTML = `
+      <div class="espacio-img">
+  <img 
+    src="${e.imagen || imagenPorDefectoEspacio(e.tipo)}" 
+    alt="${e.nombre}" 
+    class="w-full h-full object-cover"
+  >
+</div>
+        <div class="p-4">
+          <div class="flex items-start justify-between gap-2 mb-2">
+            <h3 class="text-base font-bold text-gray-800 leading-tight">${e.nombre}</h3>
+            <span class="espacio-badge ${TIPO_COLORS[e.tipo] || ''} flex-shrink-0">${TIPO_LABELS[e.tipo] || e.tipo}</span>
+          </div>
+          <div class="space-y-1.5 mb-4">
+            <p class="text-sm text-gray-500 flex items-center gap-1.5">
+              <i data-lucide="users" class="w-3.5 h-3.5"></i> ${e.capacidad} personas
+            </p>
+            <p class="text-sm text-gray-500 flex items-center gap-1.5">
+              <i data-lucide="map-pin" class="w-3.5 h-3.5"></i> ${e.ubicacion}
+            </p>
+            ${e.descripcion ? `<p class="text-sm text-gray-400 line-clamp-2">${e.descripcion}</p>` : ''}
+          </div>
+          <button onclick="verDetalleEspacio(${e.id})"
+            class="w-full bg-[#0165a7] hover:bg-[#014e85] text-white text-sm font-semibold py-2 rounded-lg transition flex items-center justify-center gap-1.5">
+            <i data-lucide="eye" class="w-3.5 h-3.5"></i> Ver detalles
+          </button>
+        </div>`;
+      grid.appendChild(card);
+    });
+
+    lucide.createIcons();
+  } catch (err) {
+    console.error('Error cargando espacios:', err);
+    cargando.classList.add('hidden');
+    vacio.classList.remove('hidden');
+  }
+}
+
+/* ─── US-006: Detalle + Disponibilidad ─── */
+async function verDetalleEspacio(id) {
+  mostrarSeccion('espacio-detalle');
+
+  // Limpiar estado anterior
+  document.getElementById('detalleNombre').textContent      = 'Cargando...';
+  document.getElementById('detalleTipoUbicacion').textContent = '–';
+  document.getElementById('disponibilidadGrid').innerHTML   = '<p class="text-sm text-gray-400">Cargando disponibilidad...</p>';
+
+  try {
+    const res  = await fetch(`./detalle_espacio.php?id=${id}`);
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      alert(data.error || 'No se pudo cargar el espacio');
+      mostrarSeccion('espacios');
+      return;
+    }
+
+    const e   = data.espacio;
+    const dis = data.disponibilidad;
+
+    // Cabecera
+    document.getElementById('detalleNombre').textContent        = e.nombre;
+    document.getElementById('detalleTipoUbicacion').textContent = `${TIPO_LABELS[e.tipo] || e.tipo} · ${e.ubicacion}`;
+
+    // Badge tipo
+    const badge = document.getElementById('detalleBadgeTipo');
+    badge.textContent  = TIPO_LABELS[e.tipo] || e.tipo;
+    badge.className    = `espacio-badge ${TIPO_COLORS[e.tipo] || ''}`;
+
+    document.getElementById('detalleCapacidad').textContent  = e.capacidad;
+    document.getElementById('detalleUbicacion').textContent  = e.ubicacion;
+    document.getElementById('detalleDescripcion').textContent = e.descripcion || 'Sin descripción';
+
+    // Imagen
+    const imgContainer = document.getElementById('detalleImagen');
+    imgContainer.innerHTML = `
+    <img 
+      src="${e.imagen || imagenPorDefectoEspacio(e.tipo)}" 
+      alt="${e.nombre}" 
+      class="w-full h-full object-cover"
+    >
+  `;
+
+    // Disponibilidad: grilla 7 días x franjas horarias
+    renderizarDisponibilidad(dis);
+    lucide.createIcons();
+
+  } catch (err) {
+    console.error('Error cargando detalle:', err);
+    alert('Error de conexión al cargar el espacio');
+    mostrarSeccion('espacios');
+  }
+}
+
+function renderizarDisponibilidad(disponibilidad) {
+  const container = document.getElementById('disponibilidadGrid');
+  container.innerHTML = '';
+
+  // Franjas de 2 horas entre 7:00 y 21:00
+  const FRANJAS = [
+    '07:00–09:00', '09:00–11:00', '11:00–13:00',
+    '13:00–15:00', '15:00–17:00', '17:00–19:00', '19:00–21:00'
+  ];
+
+  const DIAS_ES = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  const MESES_ES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+
+  Object.entries(disponibilidad).forEach(([fecha, reservas]) => {
+    const d = new Date(fecha + 'T00:00:00');
+    const diaNombre = DIAS_ES[d.getDay()];
+    const diaLabel  = `${diaNombre} ${d.getDate()} ${MESES_ES[d.getMonth()]}`;
+
+    const fila = document.createElement('div');
+    fila.className = 'disponibilidad-fila';
+
+    const labelDia = document.createElement('span');
+    labelDia.className = 'disponibilidad-dia';
+    labelDia.textContent = diaLabel;
+    fila.appendChild(labelDia);
+
+    const slots = document.createElement('div');
+    slots.className = 'disponibilidad-slots';
+
+    FRANJAS.forEach(franja => {
+      const [inicioF, finF] = franja.split('–');
+      const ocupado = reservas.some(r => {
+        return r.hora_inicio < finF && r.hora_fin > inicioF;
+      });
+
+      const slot = document.createElement('div');
+      slot.className = `disponibilidad-slot ${ocupado ? 'ocupado' : 'libre'}`;
+      slot.title     = `${franja} · ${ocupado ? 'Reservado' : 'Disponible'}`;
+      slot.textContent = inicioF.slice(0,5);
+      slots.appendChild(slot);
+    });
+
+    fila.appendChild(slots);
+    container.appendChild(fila);
+  });
+}
+
+/* ─── US-004: Crear Espacio (Admin) ─── */
+function previewImagenEspacio(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    imagenEspacioBase64 = e.target.result;
+    const prev = document.getElementById('crearImagenPreview');
+    prev.innerHTML = `<img src="${e.target.result}" class="w-full h-full object-cover rounded-xl">`;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function crearEspacio() {
+  const nombre      = document.getElementById('crearNombre').value.trim();
+  const tipo        = document.getElementById('crearTipo').value;
+  const capacidad   = document.getElementById('crearCapacidad').value;
+  const ubicacion   = document.getElementById('crearUbicacion').value.trim();
+  const descripcion = document.getElementById('crearDescripcion').value.trim();
+
+  const errDiv = document.getElementById('crearEspacioError');
+  const errMsg = document.getElementById('crearEspacioErrorMsg');
+
+  errDiv.classList.add('hidden');
+
+  // Validación frontend
+  if (!nombre || !tipo || !capacidad || !ubicacion) {
+    errMsg.textContent = 'Por favor completa todos los campos obligatorios.';
+    errDiv.classList.remove('hidden');
+    return;
+  }
+  if (parseInt(capacidad) <= 0) {
+    errMsg.textContent = 'La capacidad debe ser un número positivo.';
+    errDiv.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    const response = await fetch('./crear_espacio.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        correo:      usuarioActual,
+        nombre,
+        tipo,
+        capacidad:   parseInt(capacidad),
+        ubicacion,
+        descripcion,
+        imagen:      imagenEspacioBase64 || null
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      errMsg.textContent = result.error || 'Error al crear el espacio';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+
+    // Limpiar formulario
+    ['crearNombre','crearCapacidad','crearUbicacion','crearDescripcion'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    document.getElementById('crearTipo').value = '';
+    document.getElementById('crearImagenPreview').innerHTML = '<i data-lucide="image" class="w-7 h-7 text-gray-300"></i>';
+    imagenEspacioBase64 = null;
+    lucide.createIcons();
+
+    mostrarToast('✓ Espacio creado correctamente');
+    await cargarEspacios();
+    mostrarSeccion('espacios');
+
+  } catch (err) {
+    console.error('Error:', err);
+    errMsg.textContent = 'Error de conexión con el servidor';
+    errDiv.classList.remove('hidden');
+  }
+}
+
+/* ══════════════════════════════════════════════
+   ÉPICA 03 — GESTIÓN DE RESERVAS
+══════════════════════════════════════════════ */
+
+const ESTADO_BADGE = {
+  pendiente: { cls: 'badge-pendiente', label: 'Pendiente' },
+  aprobada:  { cls: 'badge-aprobada',  label: 'Aprobada'  },
+  rechazada: { cls: 'badge-rechazada', label: 'Rechazada' },
+  cancelada: { cls: 'badge-cancelada', label: 'Cancelada' }
+};
+
+let tabReservaActual   = 'proximas';
+let filtroAdminActual  = 'pendiente';
+let reservaIdArechazar = null;
+
+/* ─── US-009: Mis Reservas ─── */
+async function cargarMisReservas() {
+  if (!usuarioActual) return;
+
+  document.getElementById('reservasCargando').classList.remove('hidden');
+  document.getElementById('panel-proximas').classList.add('hidden');
+  document.getElementById('panel-historial').classList.add('hidden');
+
+  try {
+    const res  = await fetch(`./mis_reservas.php?correo=${encodeURIComponent(usuarioActual)}`);
+    const data = await res.json();
+
+    document.getElementById('reservasCargando').classList.add('hidden');
+
+    renderizarListaReservas('panel-proximas',  data.proximas  || [], true);
+    renderizarListaReservas('panel-historial', data.historial || [], false);
+
+    cambiarTabReservas(tabReservaActual);
+  } catch (err) {
+    console.error('Error cargando reservas:', err);
+    document.getElementById('reservasCargando').classList.add('hidden');
+  }
+}
+
+function renderizarListaReservas(panelId, lista, mostrarCancelar) {
+  const panel = document.getElementById(panelId);
+  panel.innerHTML = '';
+
+  if (lista.length === 0) {
+    panel.innerHTML = `
+      <div class="bg-white rounded-2xl p-10 border border-gray-100 text-center text-gray-400">
+        <i data-lucide="calendar-x-2" class="w-12 h-12 mx-auto mb-3 text-gray-200"></i>
+        <p class="font-semibold text-gray-500">No hay reservas aquí</p>
+      </div>`;
+    lucide.createIcons();
+    return;
+  }
+
+  lista.forEach(r => {
+    const badge  = ESTADO_BADGE[r.estado] || { cls: '', label: r.estado };
+    const fechaF = new Date(r.fecha + 'T00:00:00').toLocaleDateString('es-CO', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+    const card   = document.createElement('div');
+    card.className = 'reserva-card';
+    card.innerHTML = `
+      <div class="flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
+            <h3 class="text-base font-bold text-gray-800">${r.espacio_nombre}</h3>
+            <span class="espacio-badge ${TIPO_COLORS[r.espacio_tipo] || ''}">${TIPO_LABELS[r.espacio_tipo] || r.espacio_tipo}</span>
+          </div>
+          <p class="text-sm text-gray-500 flex items-center gap-1.5 mb-0.5">
+            <i data-lucide="map-pin" class="w-3 h-3"></i> ${r.espacio_ubicacion}
+          </p>
+          <p class="text-sm text-gray-500 flex items-center gap-1.5 mb-0.5">
+            <i data-lucide="calendar" class="w-3 h-3"></i> ${fechaF}
+          </p>
+          <p class="text-sm text-gray-500 flex items-center gap-1.5 mb-2">
+            <i data-lucide="clock" class="w-3 h-3"></i> ${r.hora_inicio.slice(0,5)} – ${r.hora_fin.slice(0,5)}
+          </p>
+          ${r.proposito ? `<p class="text-sm text-gray-400 italic">"${r.proposito}"</p>` : ''}
+          ${r.motivo_rechazo ? `<p class="text-sm text-red-400 mt-1">Motivo: ${r.motivo_rechazo}</p>` : ''}
+        </div>
+        <div class="flex flex-col items-end gap-2 flex-shrink-0">
+          <span class="reserva-estado ${badge.cls}">${badge.label}</span>
+          ${mostrarCancelar && r.estado === 'pendiente'
+            ? `<button onclick="cancelarReserva(${r.id})"
+                class="text-base text-red-500 hover:text-red-700 font-semibold flex items-center gap-1 transition">
+                <i data-lucide="x-circle" class="w-3.5 h-3.5"></i> Cancelar
+               </button>`
+            : ''}
+        </div>
+      </div>`;
+    panel.appendChild(card);
+  });
+
+  lucide.createIcons();
+}
+
+function cambiarTabReservas(tab) {
+  tabReservaActual = tab;
+  ['proximas','historial'].forEach(t => {
+    document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+    document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
+  });
+}
+
+async function cancelarReserva(id) {
+  if (!confirm('¿Estás seguro de que deseas cancelar esta reserva?')) return;
+  try {
+    const res    = await fetch('./cancelar_reserva.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, correo: usuarioActual })
+    });
+    const result = await res.json();
+    if (!res.ok) { alert(result.error || 'Error al cancelar'); return; }
+    mostrarToast('✓ Reserva cancelada');
+    cargarMisReservas();
+  } catch (err) {
+    alert('Error de conexión');
+  }
+}
+
+/* ─── US-007: Nueva Reserva ─── */
+async function inicializarFormularioReserva() {
+  // Poblar select de espacios — siempre se recarga para reflejar nuevos espacios creados
+  const select = document.getElementById('reservaEspacioId');
+  const valorPrevio = select.value;
+  select.innerHTML = '<option value="">Seleccionar espacio...</option>';
+  try {
+    const res  = await fetch('./listar_espacios.php');
+    const data = await res.json();
+    (data.espacios || []).forEach(e => {
+      const opt = document.createElement('option');
+      opt.value       = e.id;
+      opt.textContent = `${e.nombre} · ${TIPO_LABELS[e.tipo] || e.tipo} (${e.capacidad} pers.)`;
+      select.appendChild(opt);
+    });
+    // Restaurar selección previa si aún existe
+    if (valorPrevio) select.value = valorPrevio;
+  } catch (err) { console.error('Error cargando espacios:', err); }
+
+  // Fecha mínima = hoy
+  document.getElementById('reservaFecha').min = new Date().toISOString().split('T')[0];
+
+  // Limpiar errores
+  document.getElementById('nuevaReservaError').classList.add('hidden');
+  document.getElementById('disponibilidadInfo').classList.add('hidden');
+}
+
+async function crearReserva() {
+  const espacio_id  = document.getElementById('reservaEspacioId').value;
+  const fecha       = document.getElementById('reservaFecha').value;
+  const hora_inicio = document.getElementById('reservaHoraInicio').value;
+  const hora_fin    = document.getElementById('reservaHoraFin').value;
+  const proposito   = document.getElementById('reservaProposito').value.trim();
+
+  const errDiv = document.getElementById('nuevaReservaError');
+  const errMsg = document.getElementById('nuevaReservaErrorMsg');
+  const errAlt = document.getElementById('nuevaReservaAlternativa');
+
+  errDiv.classList.add('hidden');
+
+  if (!espacio_id || !fecha || !hora_inicio || !hora_fin || !proposito) {
+    errMsg.textContent = 'Por favor completa todos los campos obligatorios.';
+    errAlt.textContent = '';
+    errDiv.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    const res    = await fetch('./crear_reserva.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correo: usuarioActual, espacio_id: parseInt(espacio_id), fecha, hora_inicio, hora_fin, proposito })
+    });
+    const result = await res.json();
+
+    if (!res.ok) {
+      errMsg.textContent = result.error || 'Error al crear la reserva';
+      errAlt.textContent = result.alternativa || '';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+
+    // Limpiar formulario
+    document.getElementById('reservaEspacioId').value  = '';
+    document.getElementById('reservaFecha').value      = '';
+    document.getElementById('reservaHoraInicio').value = '';
+    document.getElementById('reservaHoraFin').value    = '';
+    document.getElementById('reservaProposito').value  = '';
+
+    mostrarToast('✓ Reserva creada · Pendiente de aprobación');
+    tabReservaActual = 'proximas';
+    mostrarSeccion('reservas');
+    cargarMisReservas();
+  } catch (err) {
+    errMsg.textContent = 'Error de conexión con el servidor';
+    errAlt.textContent = '';
+    errDiv.classList.remove('hidden');
+  }
+}
+
+/* ─── US-008: Panel Admin Reservas ─── */
+async function cargarReservasAdmin(estado) {
+  filtroAdminActual = estado;
+
+  const lista    = document.getElementById('adminReservasLista');
+  const cargando = document.getElementById('adminReservasCargando');
+
+  lista.innerHTML = '';
+  cargando.classList.remove('hidden');
+
+  // Actualizar tabs
+  ['pendiente','aprobada','rechazada'].forEach(t => {
+    document.getElementById(`admin-tab-${t}`).classList.toggle('active', t === estado);
+  });
+
+  try {
+    const res  = await fetch(`./reservas_pendientes.php?correo_admin=${encodeURIComponent(usuarioActual)}&estado=${estado}`);
+    const data = await res.json();
+    cargando.classList.add('hidden');
+
+    const reservas = data.reservas || [];
+
+    if (reservas.length === 0) {
+      lista.innerHTML = `
+        <div class="bg-white rounded-2xl p-10 border border-gray-100 text-center text-gray-400">
+          <i data-lucide="inbox" class="w-12 h-12 mx-auto mb-3 text-gray-200"></i>
+          <p class="font-semibold text-gray-500">No hay reservas ${estado === 'pendiente' ? 'pendientes' : estado === 'aprobada' ? 'aprobadas' : 'rechazadas'}</p>
+        </div>`;
+      lucide.createIcons();
+      return;
+    }
+
+    reservas.forEach(r => {
+      const badge   = ESTADO_BADGE[r.estado] || { cls: '', label: r.estado };
+      const fechaF  = new Date(r.fecha + 'T00:00:00').toLocaleDateString('es-CO', { weekday:'short', year:'numeric', month:'short', day:'numeric' });
+      const usuario = r.primerNombre ? `${r.primerNombre} ${r.primerApellido || ''}`.trim() : r.usuario_nombre || r.usuario_correo;
+
+      const card = document.createElement('div');
+      card.className = 'reserva-card';
+      card.innerHTML = `
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1 flex-wrap">
+              <h3 class="text-base font-bold text-gray-800">${r.espacio_nombre}</h3>
+              <span class="espacio-badge ${TIPO_COLORS[r.espacio_tipo] || ''}">${TIPO_LABELS[r.espacio_tipo] || r.espacio_tipo}</span>
+              <span class="reserva-estado ${badge.cls}">${badge.label}</span>
+            </div>
+            <p class="text-sm text-gray-500 flex items-center gap-1.5 mb-0.5">
+              <i data-lucide="user" class="w-3 h-3"></i> ${usuario} · <span class="text-gray-400">${r.usuario_correo}</span>
+            </p>
+            <p class="text-sm text-gray-500 flex items-center gap-1.5 mb-0.5">
+              <i data-lucide="calendar" class="w-3 h-3"></i> ${fechaF} · ${r.hora_inicio.slice(0,5)} – ${r.hora_fin.slice(0,5)}
+            </p>
+            <p class="text-sm text-gray-500 flex items-center gap-1.5 mb-1">
+              <i data-lucide="map-pin" class="w-3 h-3"></i> ${r.espacio_ubicacion}
+            </p>
+            ${r.proposito ? `<p class="text-sm text-gray-400 italic">"${r.proposito}"</p>` : ''}
+            ${r.motivo_rechazo ? `<p class="text-sm text-red-400 mt-1">Motivo rechazo: ${r.motivo_rechazo}</p>` : ''}
+          </div>
+          ${estado === 'pendiente' ? `
+          <div class="flex gap-2 flex-shrink-0">
+            <button onclick="gestionarReserva(${r.id},'aprobar')"
+              class="bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-1.5 transition">
+              <i data-lucide="check" class="w-3.5 h-3.5"></i> Aprobar
+            </button>
+            <button onclick="abrirModalRechazo(${r.id})"
+              class="bg-red-500 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-1.5 transition">
+              <i data-lucide="x" class="w-3.5 h-3.5"></i> Rechazar
+            </button>
+          </div>` : ''}
+        </div>`;
+      lista.appendChild(card);
+    });
+
+    lucide.createIcons();
+  } catch (err) {
+    console.error('Error cargando reservas admin:', err);
+    cargando.classList.add('hidden');
+  }
+}
+
+function cambiarFiltroAdmin(estado) {
+  cargarReservasAdmin(estado);
+}
+
+async function gestionarReserva(id, accion, motivo = '') {
+  try {
+    const res    = await fetch('./gestionar_reserva.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, correo_admin: usuarioActual, accion, motivo })
+    });
+    const result = await res.json();
+    if (!res.ok) { alert(result.error || 'Error'); return; }
+    mostrarToast(`✓ Reserva ${accion === 'aprobar' ? 'aprobada' : 'rechazada'} correctamente`);
+    cargarReservasAdmin(filtroAdminActual);
+  } catch (err) {
+    alert('Error de conexión');
+  }
+}
+
+function abrirModalRechazo(id) {
+  reservaIdArechazar = id;
+  document.getElementById('motivoRechazo').value = '';
+  const modal = document.getElementById('modal-rechazo');
+  modal.style.opacity      = '1';
+  modal.style.pointerEvents = 'all';
+}
+
+function cerrarModalRechazo() {
+  reservaIdArechazar = null;
+  const modal = document.getElementById('modal-rechazo');
+  modal.style.opacity      = '0';
+  modal.style.pointerEvents = 'none';
+}
+
+async function confirmarRechazo() {
+  const motivo = document.getElementById('motivoRechazo').value.trim();
+  const id = reservaIdArechazar;  // guardar antes de cerrar el modal
+  cerrarModalRechazo();
+  await gestionarReserva(id, 'rechazar', motivo);
 }
 
 /* ══════════════════════════════
@@ -405,4 +1135,68 @@ function mostrarToast(msg) {
 function capitalizar(str) {
   if (!str) return '';
   return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+
+async function cargarRecordatoriosReservas() {
+  try {
+    const res = await fetch('./recordatorios_reservas.php', {
+      method: 'GET',
+      credentials: 'include'
+    });
+
+    const data = await res.json();
+
+    const titulo = document.getElementById('proximaReservaTitulo');
+    const detalle = document.getElementById('proximaReservaDetalle');
+
+    if (!titulo || !detalle) return;
+
+    if (!res.ok) {
+      titulo.textContent = '–';
+      detalle.textContent = 'Sin reservas próximas';
+      return;
+    }
+
+    const recordatorios = data.recordatorios || [];
+
+    if (recordatorios.length === 0) {
+      titulo.textContent = '–';
+      detalle.textContent = 'Sin reservas próximas';
+      return;
+    }
+
+    const r = recordatorios[0];
+
+    titulo.textContent = r.espacio_nombre;
+    detalle.textContent = `${formatearFechaCorta(r.fecha)} · ${r.hora_inicio.slice(0, 5)} - ${r.hora_fin.slice(0, 5)}`;
+
+    mostrarToast(
+      `⏰ Recordatorio: tienes una reserva en ${r.espacio_nombre} el ${formatearFechaCorta(r.fecha)} a las ${r.hora_inicio.slice(0, 5)}`
+    );
+
+  } catch (error) {
+    console.error('Error cargando recordatorios:', error);
+  }
+}
+
+function formatearFechaCorta(fecha) {
+  const d = new Date(fecha + 'T00:00:00');
+  return d.toLocaleDateString('es-CO', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+}
+
+function imagenPorDefectoEspacio(tipo) {
+  const imagenes = {
+    salon: './img/salon.jpg',
+    auditorio: './img/auditorio.jpg',
+    laboratorio: './img/laboratorio.jpg',
+    cancha: './img/cancha.jpg',
+    zona_estudio: './img/zona-estudio.jpg'
+  };
+
+  return imagenes[tipo] || './img/espacio-default.jpg';
 }
